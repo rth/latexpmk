@@ -1,4 +1,4 @@
 latexpmk
 ========
 
-Python reimplementation of latexmk focused on optimising TikZ files compilation.
+A simple python script for real-time latex compilation.

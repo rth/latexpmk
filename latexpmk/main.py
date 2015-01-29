@@ -1,5 +1,10 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # -*- coding: UTF-8 -*-
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
 import os, os.path
 import sys
 import tempfile
@@ -7,6 +12,8 @@ import datetime, time
 import subprocess
 import re
 from multiprocessing import Process, Queue, Semaphore
+
+
 
 def parse_dependancies(filepath, q_compile, parse_lock, freq=1):
     """
@@ -53,15 +60,18 @@ def parse_dependancies(filepath, q_compile, parse_lock, freq=1):
                 for el in tmp_tree:
                     if el not in tree:
                         tree.append(el)
+        
 
         if any([el['mtime'] > comp_time for el in tree]):
-            print "Files changes detected:"
+            print("Files changes detected:")
             for el in tree:
                 if el['mtime'] > comp_time:
-                    print '   -', el['path']
-            q_compile.put('Need to recompile...')
+                    print('   -', el['path'])
+            q_compile.put('compiling...')
+        if not freq:
+            break
         time.sleep(freq)
-    return 0
+    return tree
 
 def parse_latex(filename):
     """
@@ -69,7 +79,7 @@ def parse_latex(filename):
     """
     regexp = (r'\\(?P<command>input|include|includegraphics)'   # command name
         r'(?:\[[^]]+\])?' # optional arguments [*]
-        r'{(?P<path>.+)}'   # file name {*} 
+        r'{(?P<path>[^}]+)}'   # file name {*} 
         )
     slist = []
 
@@ -81,15 +91,17 @@ def parse_latex(filename):
             if match:
                 slist.append(
                         {key : match.group(key) for key in ['command', 'path']})
-                mpath = os.path.join(slist[-1]['path'])
+                if not os.path.splitext(match.group('path'))[1]:
+                    slist[-1]['path'] += '.tex'
+                mpath = slist[-1]['path']
                 if os.path.exists(mpath):
                     slist[-1]['mtime'] = os.path.getmtime(mpath)
                 else:
                     slist[-1]['mtime'] = None
-                if os.path.splitext("img/Bdot_image.jpg")[1] in ['.tex']:
-                    slist[-1]['checked'] = False
-                else:
-                    slist[-1]['checked'] = True
+                #if os.path.splitext("img/Bdot_image.jpg")[1] in ['.tex']:
+                #    slist[-1]['checked'] = False
+                #else:
+                slist[-1]['checked'] = True
     return slist
 
 
@@ -101,7 +113,7 @@ def recompile(latex_main, q_compile, parse_lock, command='pdflatex', freq=1, ):
 
         target = q_compile.get()
         parse_lock.acquire()
-        print target
+        print(target)
 
 
         out = tempfile.TemporaryFile()
@@ -111,28 +123,28 @@ def recompile(latex_main, q_compile, parse_lock, command='pdflatex', freq=1, ):
             ec = subprocess.call(
                 ["latex", "-halt-on-error", latex_main], stdout = out)
             ec2 = subprocess.call(
-                    ["dvipdfm",latex_name+'.dvi'],stdout = out2)
+                    ["dvipdfm",latex_main+'.dvi'],stdout = out2)
         elif command in ['pdflatex', 'xelatex']:
             ec = subprocess.call(
                 [command, "-halt-on-error", "-shell-escape",
                     latex_main], stdout = out)
         else:
-            print 'Unknown argument {0}'.format(command)
+            print('Unknown argument {0}'.format(command))
 
         if ec:
             if out:
                 out.seek(0)
                 sys.stdout.write(out.read())
-            print "auptex: ERROR generating {} with xelatex in {:.1f}s.".format(latex_name, time.time() - t)
+            print("auptex: ERROR generating {} with xelatex in {:.1f}s.".format(latex_main, time.time() - t))
         else:
-            print "auptex: Successfully generated {} in {:.1f}s.".format(latex_name,
-                    time.time() - t)
+            print("auptex: Successfully generated {} in {:.1f}s.".format(latex_main,
+                    time.time() - t))
         if out:
             out.close()
         parse_lock.release()
 
 
-if __name__ == "__main__":
+def cli():
 
     import argparse
 
@@ -144,30 +156,45 @@ if __name__ == "__main__":
     parser.add_argument('inputfile',
             action="store", type=str,
             help='Working latex file')
-    parser.add_argument('-l','--latex',
-            action="store_true",
+    parser.add_argument('-c','--compiler',
+            action="store", type=str,
+            default='pdflatex',
             help='Compile using latex and dvipdfm')
-    parser.add_argument('-pl','--pdflatex',
-            action="store_true",
-            help='Compile using pdflatex')
+    parser.add_argument('-a','--action',
+            action="store", type=str,
+            default='compile',
+            help='What action to do')
     args = parser.parse_args()
 
     latex_filename = os.path.abspath(args.inputfile)
     if not os.path.exists(latex_filename):
-        print 'Error: file {} does not exist'.format(latex_filename)
+        print('Error: file {} does not exist'.format(latex_filename))
         sys.exit(0)
     latex_dir, latex_name = os.path.split(latex_filename)
     latex_name = os.path.splitext(latex_name)[0]
     os.chdir(latex_dir)
+    latex_dir =  os.path.split(latex_dir)[1]
     q_compile = Queue()
     parse_lock = Semaphore()
 
-    p_parse = Process(target=parse_dependancies,
-            args=(latex_name, q_compile, parse_lock))
-    p_compile = Process(target=recompile,
-            args=(latex_name, q_compile, parse_lock))
-    p_parse.start()
-    p_compile.start()
+    if args.action == 'compile':
+        p_parse = Process(target=parse_dependancies,
+                args=(latex_name, q_compile, parse_lock))
+        p_compile = Process(target=recompile,
+                args=(latex_name, q_compile, parse_lock, args.compiler))
+        p_parse.start()
+        p_compile.start()
+    elif args.action == 'zip':
+        import zipfile
+        print("Creating a zip archive")
+        tree =  parse_dependancies(latex_name, q_compile, parse_lock, freq=0)
+        os.chdir("../")
+        with zipfile.ZipFile('{0}.zip'.format(latex_dir), 'w') as zf:
+            for leaf in tree:
+                zf.write(os.path.join('{0}'.format(latex_dir), leaf['path']))
+            #zf.write(os.path.join('{0}'.format(latex_dir), "poster_CosmoB.bib"))
+
+
     #p_parse.join()
 
 
